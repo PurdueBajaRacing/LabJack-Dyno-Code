@@ -5,10 +5,7 @@ import os, time, csv, sys
 import logging
 from threading import Thread
 
-import random
-
 """
-
 Relevant Documentation:
  
 LJM Library:
@@ -33,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.1"
+VERSION = "0.0.2"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -70,14 +67,13 @@ except:
 
     ID_label = tk.Label(
         window,
-        text="File Error?\nSomething something you have a weird filesystem.\nMove this .exe to a REASONABLE folder, and try again",
+        text="File Error?\nSomething something you have a weird filesystem.\nMove this .exe to a REASONABLE folder, and try again\nIf it's in a reasonable folder, let Taiga know",
     )
     ID_label.pack()
     window.mainloop()
     sys.exit()  # prevent an exception
 
 # Open first found LabJack
-LJ_good = False
 try:
     # Find the LJ: T7, Any connection, Any identifier
     handle = ljm.openS("T7", "ANY", "ANY")
@@ -87,7 +83,6 @@ try:
         "Serial number: %i, IP address: %s, Port: %i,\nMax bytes per MB: %i"
         % (info[0], info[1], info[2], ljm.numberToIP(info[3]), info[4], info[5])
     )
-    LJ_good = True
 except:
     logging.exception("")
     print("No LJ Found!")
@@ -130,7 +125,6 @@ ljm.eWriteNames(handle, numFrames, aNames, aValues)
 
 def makeNewFile():
     """Checks existing and creates new file name"""
-    global filename
 
     filename_blank = "LJdata"
     i = 0
@@ -143,9 +137,11 @@ def makeNewFile():
     with open(filename, "w") as f:
         f.write(file_header)
 
+    return filename
+
 
 def start_log():
-    global loggingState, easterEggCounter, filename, handle
+    global loggingState, easterEggCounter, handle
 
     if loggingState:
         return
@@ -155,19 +151,20 @@ def start_log():
     loggingState = 1
     easterEggCounter = -1
     info_label.config(text="Setting Up...", fg="black")
-    makeNewFile()
+    current_filename = makeNewFile()
 
     data = [0, 0, 0]
     start_time = time.time()
-    f = open(filename, "a", newline="")
+    f = open(current_filename, "a", newline="")
     writer = csv.writer(f)
 
-    # Read AIN0 and AIN2 from the LabJack with eReadNames in a loop.
     numFrames = 2
     aNames = ["AIN0", "AIN2"]
 
     intervalHandle = 1
     ljm.startInterval(intervalHandle, 1000)  # Delay between readings (in microseconds)
+
+    logging.debug(f"Writing data to {current_filename}")
 
     info_label.config(text="Running...")
     while loggingState == 1:
@@ -187,8 +184,8 @@ def start_log():
     f.close()
     ljm.cleanInterval(intervalHandle)
     ljm.close(handle)
-    logging.debug("Stopping data logging...")
-    info_label.config(text=f"Saved data to {filename[len(DATA_DIR) + 1:]}", fg="black")
+    logging.debug("Stopped data logging")
+    info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black")
     loggingState = 0
 
 
