@@ -90,14 +90,12 @@ try:
     LJ_good = True
 except:
     logging.exception("")
-    if IS_EXE_MODE:
-        ID_label = tk.Label(
-            window, text="No LabJack!\nPlug in the LabJack, and reopen this program"
-        )
-        ID_label.pack()
-        window.mainloop()
-    else:
-        print("No LJ Found!")
+    print("No LJ Found!")
+    ID_label = tk.Label(
+        window, text="No LabJack!\nPlug in the LabJack, and reopen this program"
+    )
+    ID_label.pack()
+    window.mainloop()
     sys.exit()
 
 # Labjack setup
@@ -152,6 +150,8 @@ def start_log():
     if loggingState:
         return
 
+    logging.debug("Starting data logging...")
+
     loggingState = 1
     easterEggCounter = -1
     info_label.config(text="Setting Up...", fg="black")
@@ -187,6 +187,7 @@ def start_log():
     f.close()
     ljm.cleanInterval(intervalHandle)
     ljm.close(handle)
+    logging.debug("Stopping data logging...")
     info_label.config(text=f"Saved data to {filename[len(DATA_DIR) + 1:]}", fg="black")
     loggingState = 0
 
