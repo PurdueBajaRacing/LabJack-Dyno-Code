@@ -166,14 +166,15 @@ def start_log():
 
     logging.debug(f"Writing data to {current_filename}")
 
-    info_label.config(text="Running...")
     while loggingState == 1:
         try:
             results = ljm.eReadNames(handle, numFrames, aNames)
             data[0] = time.time() - start_time
 
-            data[1] = results[0] * 20  # 100 Nm over 5 volts
+            data[1] = results[0] * -20  # 100 Nm over 5 volts
             data[2] = results[1] * 1200  # 6000 RPM over 5 volts
+
+            info_label.config(text=f"Torque {data[1]} N-m\nSpeed {data[2]} RPM")
 
             writer.writerow(data)
 
@@ -182,10 +183,14 @@ def start_log():
             logging.exception("")
 
     f.close()
-    ljm.cleanInterval(intervalHandle)
-    ljm.close(handle)
-    logging.debug("Stopped data logging")
-    info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black")
+    try:
+        ljm.cleanInterval(intervalHandle)
+        ljm.close(handle)
+        logging.debug("Stopped data logging")
+        info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black")
+    except:
+        logging.exception("")
+        info_label.config(text=f"Failed to save data", fg="black")
     loggingState = 0
 
 
