@@ -48,6 +48,172 @@ logging.basicConfig(
     level=logging.DEBUG,
 )
 
+
+def openLabJack():
+    # Open first found LabJack
+    try:
+        # Find the LJ: T7, Any connection, Any identifier
+        handle_local = ljm.openS("T7", "ANY", "ANY")
+        info = ljm.getHandleInfo(handle_local)
+        logging.debug(
+            "Opened a LabJack with Device type: %i, Connection type: %i,\n"
+            "Serial number: %i, IP address: %s, Port: %i,\nMax bytes per MB: %i"
+            % (info[0], info[1], info[2], ljm.numberToIP(info[3]), info[4], info[5])
+        )
+    except:
+        logging.exception("")
+        return None
+
+    # Labjack setup
+
+    # Ensure triggered stream is disabled.
+    ljm.eWriteName(handle_local, "STREAM_TRIGGER_INDEX", 0)
+
+    # Enabling internally-clocked stream.
+    ljm.eWriteName(handle_local, "STREAM_CLOCK_SOURCE", 0)
+
+    # AIN0:
+    #   Range = +/-10.0 V (10)
+    #   Resolution index = Default (0)
+    #   Negative Channel = Differential with AIN1 as negative (1)
+    #   Settling, in microseconds = Auto (0)
+    #   See https://github.com/labjack/labjack-ljm-python/blob/master/Examples/More/Utilities/thermocouple_example_ain_ef.py#L103
+    #      for Diffy reference
+
+    # AIN2:
+    #   Range = +/-10.0 V (10)
+    #   Resolution index = Default (0)
+    #   Negative Channel = single-ended (199)
+    #   Settling, in microseconds = Auto (0)
+    aNames = [
+        "AIN0_RANGE",
+        "AIN0_RESOLUTION_INDEX",
+        "AIN0_NEGATIVE_CH",
+        "AIN0_SETTLING_US",
+        "AIN2_RANGE",
+        "AIN2_RESOLUTION_INDEX",
+        "AIN2_NEGATIVE_CH",
+        "AIN2_SETTLING_US",
+        "STREAM_SETTLING_US",
+    ]
+    aValues = [10, 0, 1, 0, 10, 0, ljm.constants.GND, 0, 450]
+    numFrames = len(aNames)
+    ljm.eWriteNames(handle_local, numFrames, aNames, aValues)
+
+    return handle_local
+
+
+def makeNewFile():
+    """Checks existing and creates new file name"""
+
+    filename_blank = "LJdata"
+    i = 0
+    filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
+    while os.path.exists(filename):
+        i += 1
+        filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
+
+    file_header = "Time, Torque (Nm), Speed (RPM)\n"
+    with open(filename, "w") as f:
+        f.write(file_header)
+
+    return filename
+
+
+def start_log():
+    global loggingState, easterEggCounter
+
+    if loggingState:
+        return
+
+    logging.debug("Starting data logging...")
+
+    handle = openLabJack()
+    if handle is None:
+        info_label.config(text="Failed to open LabJack, try again", fg="black")
+        return
+
+    loggingState = 1
+    easterEggCounter = -1
+    info_label.config(text="Setting Up...", fg="black")
+    current_filename = makeNewFile()
+
+    data = [0, 0, 0]
+    f = open(current_filename, "a", newline="")
+    writer = csv.writer(f)
+    lineCounter = 0
+    lineMax = 1000
+
+    # Stream Configuration
+    aScanListNames = [
+        "AIN0",
+        "AIN2",
+    ]  # Scan list names to stream - Must be updated depending on sensors
+    numAddresses = len(aScanListNames)
+    aScanList = ljm.namesToAddresses(numAddresses, aScanListNames)[0]
+    scanRate = 1000  # Sampling frequency in Hz
+    scansPerRead = 1  # How many samples are pulled off the buffer at once
+
+    # Configure and start stream
+    ljm.eStreamStart(handle, scansPerRead, numAddresses, aScanList, scanRate)
+
+    start_time = time.time()
+
+    logging.debug(f"Writing data to {current_filename}")
+
+    while loggingState == 1:
+        try:
+            aData = ljm.eStreamRead(handle)[0]
+            data[0] = time.time() - start_time
+
+            data[1] = aData[0] * -20  # 100 Nm over 5 volts
+            data[2] = aData[1] * 1200  # 6000 RPM over 5 volts
+
+            info_label.config(text=f"Torque {data[1]} N-m\nSpeed {data[2]} RPM")
+
+            writer.writerow(data)
+
+            lineCounter += 1
+
+            if (lineCounter == lineMax):
+                f.close()
+                f = open(current_filename, "a")
+                lineCounter = 0
+        except:
+            logging.exception("")
+
+    logging.debug("Stopping data logging...")
+    try:
+        f.close()
+        ljm.eStreamStop(handle)  # Close Data stream from LJ
+        ljm.close(handle)
+        logging.debug("Stopped data logging")
+        info_label.config(
+            text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black"
+        )
+    except:
+        logging.exception("")
+        info_label.config(text=f"Failed to save data", fg="black")
+    loggingState = 0
+
+
+def stop_log():
+    global loggingState, easterEggCounter
+
+    colorsList = ["black", "black", "black", "red", "orange", "yellow", "green", "blue", "indigo", "purple"] # fmt: skip
+
+    easterEggCounter += 1
+    if easterEggCounter >= len(colorsList):
+        easterEggCounter = 2
+        logging.debug("Oh wow, they found the easter egg!")
+
+    if loggingState == 0:
+        info_label.config(text="You aren't running!", fg=colorsList[easterEggCounter])
+    elif loggingState == 1:
+        loggingState = 2
+        info_label.config(text="Stopping logging...")
+
+
 logging.debug(f"Running {VERSION}, using data folder {DATA_DIR}, EXE: {IS_EXE_MODE}")
 loggingState = 0  # 0 - not running, 1 - running, 2 - stopping logging
 easterEggCounter = -1
@@ -73,18 +239,8 @@ except:
     window.mainloop()
     sys.exit()  # prevent an exception
 
-# Open first found LabJack
-try:
-    # Find the LJ: T7, Any connection, Any identifier
-    handle = ljm.openS("T7", "ANY", "ANY")
-    info = ljm.getHandleInfo(handle)
-    logging.debug(
-        "Opened a LabJack with Device type: %i, Connection type: %i,\n"
-        "Serial number: %i, IP address: %s, Port: %i,\nMax bytes per MB: %i"
-        % (info[0], info[1], info[2], ljm.numberToIP(info[3]), info[4], info[5])
-    )
-except:
-    logging.exception("")
+handle = openLabJack()
+if handle is None:
     print("No LJ Found!")
     ID_label = tk.Label(
         window, text="No LabJack!\nPlug in the LabJack, and reopen this program"
@@ -92,124 +248,7 @@ except:
     ID_label.pack()
     window.mainloop()
     sys.exit()
-
-# Labjack setup
-# AIN0:
-#   Range = +/-10.0 V (10)
-#   Resolution index = Default (0)
-#   Negative Channel = Differential with AIN1 as negative (1)
-#   Settling, in microseconds = Auto (0)
-#   See https://github.com/labjack/labjack-ljm-python/blob/master/Examples/More/Utilities/thermocouple_example_ain_ef.py#L103
-#      for Diffy reference
-
-# AIN2:
-#   Range = +/-10.0 V (10)
-#   Resolution index = Default (0)
-#   Negative Channel = single-ended (199)
-#   Settling, in microseconds = Auto (0)
-aNames = [
-    "AIN0_RANGE",
-    "AIN0_RESOLUTION_INDEX",
-    "AIN0_NEGATIVE_CH",
-    "AIN0_SETTLING_US",
-    "AIN2_RANGE",
-    "AIN2_RESOLUTION_INDEX",
-    "AIN2_NEGATIVE_CH",
-    "AIN2_SETTLING_US",
-]
-aValues = [10, 0, 1, 0, 10, 0, 199, 0]
-numFrames = len(aNames)
-
-ljm.eWriteNames(handle, numFrames, aNames, aValues)
-
-
-def makeNewFile():
-    """Checks existing and creates new file name"""
-
-    filename_blank = "LJdata"
-    i = 0
-    filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
-    while os.path.exists(filename):
-        i += 1
-        filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
-
-    file_header = "Time, Torque (Nm), Speed (RPM)\n"
-    with open(filename, "w") as f:
-        f.write(file_header)
-
-    return filename
-
-
-def start_log():
-    global loggingState, easterEggCounter, handle
-
-    if loggingState:
-        return
-
-    logging.debug("Starting data logging...")
-
-    loggingState = 1
-    easterEggCounter = -1
-    info_label.config(text="Setting Up...", fg="black")
-    current_filename = makeNewFile()
-
-    data = [0, 0, 0]
-    start_time = time.time()
-    f = open(current_filename, "a", newline="")
-    writer = csv.writer(f)
-
-    numFrames = 2
-    aNames = ["AIN0", "AIN2"]
-
-    intervalHandle = 1
-    ljm.startInterval(intervalHandle, 1000)  # Delay between readings (in microseconds)
-
-    logging.debug(f"Writing data to {current_filename}")
-
-    while loggingState == 1:
-        try:
-            results = ljm.eReadNames(handle, numFrames, aNames)
-            data[0] = time.time() - start_time
-
-            data[1] = results[0] * -20  # 100 Nm over 5 volts
-            data[2] = results[1] * 1200  # 6000 RPM over 5 volts
-
-            info_label.config(text=f"Torque {data[1]} N-m\nSpeed {data[2]} RPM")
-
-            writer.writerow(data)
-
-            ljm.waitForNextInterval(intervalHandle)
-        except:
-            logging.exception("")
-
-    f.close()
-    try:
-        ljm.cleanInterval(intervalHandle)
-        ljm.close(handle)
-        logging.debug("Stopped data logging")
-        info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black")
-    except:
-        logging.exception("")
-        info_label.config(text=f"Failed to save data", fg="black")
-    loggingState = 0
-
-
-def stop_log():
-    global loggingState, easterEggCounter
-
-    colorsList = ["black", "black", "black", "red", "orange", "yellow", "green", "blue", "indigo", "purple"] # fmt: skip
-
-    easterEggCounter += 1
-    if easterEggCounter >= len(colorsList):
-        easterEggCounter = 2
-        logging.debug("Oh wow, they found the easter egg!")
-
-    if loggingState == 0:
-        info_label.config(text="You aren't running!", fg=colorsList[easterEggCounter])
-    elif loggingState == 1:
-        loggingState = 2
-        info_label.config(text="Stopping logging...")
-
+ljm.close(handle)
 
 title_label = tk.Label(window, font=("Helvetica", 32), text="Cobra Dyno!")
 title_label.pack()
