@@ -9,9 +9,9 @@
 
 ## To-Dos and Notes
 
-- [ ] Test it with a potentiometer (actually screwed in)
+- [X] Test it with a potentiometer (actually screwed in)
 - [ ] Test with the load cell
-- [ ] Upload `.exe` files to releases
+- [X] Upload `.exe` files to releases
 - [ ] Test `.exe`s with other computers
 
 Should be ready for v0.1 soon!

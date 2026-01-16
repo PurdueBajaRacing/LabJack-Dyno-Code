@@ -30,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.4"
+VERSION = "0.0.5"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -153,6 +153,7 @@ def start_log():
     # Configure and start stream
     ljm.eStreamStart(handle, scansPerRead, numAddresses, aScanList, scanRate)
 
+    last_visual_update = 0
     start_time = time.time()
 
     logging.debug(f"Writing data to {current_filename}")
@@ -165,7 +166,11 @@ def start_log():
             data[1] = aData[0] * -20  # 100 Nm over 5 volts
             data[2] = aData[1] * 1200  # 6000 RPM over 5 volts
 
-            info_label.config(text=f"Torque {data[1]:.3f} N-m\nSpeed {data[2]:.3f} RPM")
+            if time.time() - last_visual_update > (1 / 60):
+                info_label.config(
+                    text=f"Torque {data[1]:.3f} N-m\nSpeed {data[2]:.3f} RPM"
+                )
+                last_visual_update = time.time()
 
             # writer.writerow(data)
 
