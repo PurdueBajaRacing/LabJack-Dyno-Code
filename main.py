@@ -30,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.2"
+VERSION = "0.0.4"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -139,16 +139,12 @@ def start_log():
     current_filename = makeNewFile()
 
     data = [0, 0, 0]
-    f = open(current_filename, "a", newline="")
-    writer = csv.writer(f)
-    lineCounter = 0
-    lineMax = 1000
+    # f = open(current_filename, "a", newline="")
+    # writer = csv.writer(f)
 
     # Stream Configuration
-    aScanListNames = [
-        "AIN0",
-        "AIN2",
-    ]  # Scan list names to stream - Must be updated depending on sensors
+    # Scan list names to stream - Must be updated depending on sensors
+    aScanListNames = ["AIN0", "AIN2"]
     numAddresses = len(aScanListNames)
     aScanList = ljm.namesToAddresses(numAddresses, aScanListNames)[0]
     scanRate = 1000  # Sampling frequency in Hz
@@ -169,31 +165,27 @@ def start_log():
             data[1] = aData[0] * -20  # 100 Nm over 5 volts
             data[2] = aData[1] * 1200  # 6000 RPM over 5 volts
 
-            info_label.config(text=f"Torque {data[1]} N-m\nSpeed {data[2]} RPM")
+            info_label.config(text=f"Torque {data[1]:.3f} N-m\nSpeed {data[2]:.3f} RPM")
 
-            writer.writerow(data)
+            # writer.writerow(data)
 
-            lineCounter += 1
-
-            if (lineCounter == lineMax):
-                f.close()
-                f = open(current_filename, "a")
-                lineCounter = 0
+            with open(current_filename, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(data)
         except:
             logging.exception("")
 
-    logging.debug("Stopping data logging...")
+    logging.debug("Stopping data record...")
     try:
+        info_label.config(text="Stopping recording...")
         f.close()
         ljm.eStreamStop(handle)  # Close Data stream from LJ
         ljm.close(handle)
-        logging.debug("Stopped data logging")
-        info_label.config(
-            text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}", fg="black"
-        )
+        logging.debug("Stopped & saved data")
+        info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}")
     except:
         logging.exception("")
-        info_label.config(text=f"Failed to save data", fg="black")
+        info_label.config(text=f"Failed to save data")
     loggingState = 0
 
 
@@ -219,7 +211,7 @@ loggingState = 0  # 0 - not running, 1 - running, 2 - stopping logging
 easterEggCounter = -1
 
 window = tk.Tk()
-window.title("Dyno Labjack Interface")
+window.title(f"Labjack-Dyno Interface - Version {VERSION}")
 s = ttk.Style()
 s.configure(".", font=("Helvetica", 32))
 
@@ -262,3 +254,4 @@ info_label = tk.Label(window, font=("Helvetica", 24), text="Press Start to Begin
 info_label.pack()
 
 window.mainloop()
+sys.exit()

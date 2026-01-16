@@ -9,9 +9,14 @@
 
 ## To-Dos and Notes
 
-Still need to test the thing and upload the `.exe` file.
+- [ ] Test it with a potentiometer (actually screwed in)
+- [ ] Test with the load cell
+- [ ] Upload `.exe` files to releases
+- [ ] Test `.exe`s with other computers
 
-Currently using Command-Response, which is useful up to 1000 Hz (which is exactly what I'm running at). If additional speed is needed, I'll need to move to Streaming.
+Should be ready for v0.1 soon!
+
+Currently closes the file after every write (which is wasteful). Consider whether it's better to only close files on occasion.
 
 ---
 
