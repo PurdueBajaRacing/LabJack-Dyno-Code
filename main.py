@@ -1,6 +1,5 @@
 from labjack import ljm
-import tkinter as tk
-from tkinter import ttk
+import ttkbootstrap as ttk
 import os, time, csv, sys
 import logging
 from threading import Thread
@@ -30,7 +29,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.5"
+VERSION = "0.0.6"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -128,15 +127,15 @@ def start_log():
 
     logging.debug("Starting data logging...")
 
-    handle = openLabJack()
-    if handle is None:
-        info_label.config(text="Failed to open LabJack, try again", fg="black")
-        return
-
+    info_label.config(text="Setting Up...", fg=None)
     loggingState = 1
     easterEggCounter = -1
-    info_label.config(text="Setting Up...", fg="black")
     current_filename = makeNewFile()
+
+    handle = openLabJack()
+    if handle is None:
+        info_label.config(text="Failed to open LabJack, try again")
+        return
 
     data = [0, 0, 0]
     # f = open(current_filename, "a", newline="")
@@ -197,7 +196,7 @@ def start_log():
 def stop_log():
     global loggingState, easterEggCounter
 
-    colorsList = ["black", "black", "black", "red", "orange", "yellow", "green", "blue", "indigo", "purple"] # fmt: skip
+    colorsList = [None, None, None, "red", "orange", "yellow", "green", "blue", "indigo", "purple"] # fmt: skip
 
     easterEggCounter += 1
     if easterEggCounter >= len(colorsList):
@@ -215,10 +214,8 @@ logging.debug(f"Running {VERSION}, using data folder {DATA_DIR}, EXE: {IS_EXE_MO
 loggingState = 0  # 0 - not running, 1 - running, 2 - stopping logging
 easterEggCounter = -1
 
-window = tk.Tk()
+window = ttk.Window()
 window.title(f"Labjack-Dyno Interface - Version {VERSION}")
-s = ttk.Style()
-s.configure(".", font=("Helvetica", 32))
 
 try:
     os.mkdir(DATA_DIR)
@@ -228,7 +225,7 @@ except FileExistsError:
 except:
     logging.exception("")
 
-    ID_label = tk.Label(
+    ID_label = ttk.Label(
         window,
         text="File Error?\nSomething something you have a weird filesystem.\nMove this .exe to a REASONABLE folder, and try again\nIf it's in a reasonable folder, let Taiga know",
     )
@@ -239,7 +236,7 @@ except:
 handle = openLabJack()
 if handle is None:
     print("No LJ Found!")
-    ID_label = tk.Label(
+    ID_label = ttk.Label(
         window, text="No LabJack!\nPlug in the LabJack, and reopen this program"
     )
     ID_label.pack()
@@ -247,15 +244,18 @@ if handle is None:
     sys.exit()
 ljm.close(handle)
 
-title_label = tk.Label(window, font=("Helvetica", 32), text="Cobra Dyno!")
+s = ttk.Style("darkly")
+s.configure(".", font=("", 24))
+
+title_label = ttk.Label(window, text="Cobra Dyno!")
 title_label.pack()
 
-button_start = ttk.Button(window,text="Start",width=25,command=lambda: Thread(target=start_log).start()) # fmt: skip
+button_start = ttk.Button(window,text="Start",width=25,command=lambda: Thread(target=start_log).start(),bootstyle="outline") # fmt: skip
 button_start.pack()
-button_stop = ttk.Button(window,text="Stop",width=25,command=lambda: Thread(target=stop_log).start()) # fmt: skip
+button_stop = ttk.Button(window,text="Stop",width=25,command=lambda: Thread(target=stop_log).start(),bootstyle="outline") # fmt: skip
 button_stop.pack()
 
-info_label = tk.Label(window, font=("Helvetica", 24), text="Press Start to Begin!")
+info_label = ttk.Label(window, text="Press Start to Begin!")
 info_label.pack()
 
 window.mainloop()
