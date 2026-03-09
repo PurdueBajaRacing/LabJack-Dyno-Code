@@ -3,6 +3,7 @@ import ttkbootstrap as ttk
 import os, time, csv, sys
 import logging
 from threading import Thread
+from statistics import mean
 
 """
 Relevant Documentation:
@@ -29,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.6"
+VERSION = "0.0.7"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -84,6 +85,12 @@ def openLabJack():
     #   Resolution index = Default (0)
     #   Negative Channel = single-ended (199)
     #   Settling, in microseconds = Auto (0)
+
+    # DIO0:
+    #   Built-in non-removable 100k pullup to 3.3V
+    #   System tolerant to 5.8V
+    #   See https://support.labjack.com/docs/13-2-8-high-speed-counter-t-series-datasheet#Stream-Read
+
     aNames = [
         "AIN0_RANGE",
         "AIN0_RESOLUTION_INDEX",
@@ -94,8 +101,10 @@ def openLabJack():
         "AIN2_NEGATIVE_CH",
         "AIN2_SETTLING_US",
         "STREAM_SETTLING_US",
+        "DIO0_EF_ENABLE",
+        "DIO0_EF_INDEX",
     ]
-    aValues = [10, 0, 1, 0, 10, 0, ljm.constants.GND, 0, 450]
+    aValues = [10, 0, 1, 0, 10, 0, ljm.constants.GND, 0, 450, 1, 7]
     numFrames = len(aNames)
     ljm.eWriteNames(handle_local, numFrames, aNames, aValues)
 
@@ -103,7 +112,7 @@ def openLabJack():
 
 
 def makeNewFile():
-    """Checks existing and creates new file name"""
+    # Checks existing and creates new file name
 
     filename_blank = "LJdata"
     i = 0
@@ -112,7 +121,7 @@ def makeNewFile():
         i += 1
         filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
 
-    file_header = "Time, Torque (Nm), Speed (RPM)\n"
+    file_header = "Time, Torque (Nm), Shaft Speed (RPM), Engine Speed (RPM)\n"
     with open(filename, "w") as f:
         f.write(file_header)
 
@@ -137,54 +146,83 @@ def start_log():
         info_label.config(text="Failed to open LabJack, try again")
         return
 
-    data = [0, 0, 0]
-    # f = open(current_filename, "a", newline="")
-    # writer = csv.writer(f)
-
     # Stream Configuration
     # Scan list names to stream - Must be updated depending on sensors
-    aScanListNames = ["AIN0", "AIN2"]
+    aScanListNames = [
+        "AIN0",
+        "AIN2",
+        "DIO0_EF_READ_A",
+        "STREAM_DATA_CAPTURE_16",
+    ]
     numAddresses = len(aScanListNames)
     aScanList = ljm.namesToAddresses(numAddresses, aScanListNames)[0]
     scanRate = 1000  # Sampling frequency in Hz
     scansPerRead = 1  # How many samples are pulled off the buffer at once
 
+    lastEngineRPMCount = 0
+    engineScanRate = 10  # engine RPM reads in Hz
+    engineRPMFactor = scanRate * 60 / 20  # TODO: replace the 20 with the number of fins
+
+    data = []
+    newData = [0, 0, 0, 0]
+    last_visual_update = 0
+    logging.debug(f"Writing data to {current_filename}")
+
+    # reset the high speed counter
+    ljm.eReadName(handle, "DIO0_EF_READ_A_AND_RESET")
+
     # Configure and start stream
     ljm.eStreamStart(handle, scansPerRead, numAddresses, aScanList, scanRate)
 
-    last_visual_update = 0
     start_time = time.time()
-
-    logging.debug(f"Writing data to {current_filename}")
 
     while loggingState == 1:
         try:
             aData = ljm.eStreamRead(handle)[0]
-            data[0] = time.time() - start_time
+            newData[0] = time.time() - start_time
 
-            data[1] = aData[0] * -20  # 100 Nm over 5 volts
-            data[2] = aData[1] * 1200  # 6000 RPM over 5 volts
+            newData[1] = aData[0] * -20  # 100 Nm over 5 volts
+            newData[2] = aData[1] * 1200  # 6000 RPM over 5 volts
+
+            rawEngineRPMCount = aData[2] + aData[3] * 65536  # engine RPM data
+            newData[3] = rawEngineRPMCount - lastEngineRPMCount
+            lastEngineRPMCount = rawEngineRPMCount
+
+            data.append(newData)
 
             if time.time() - last_visual_update > (1 / 60):
                 info_label.config(
                     text=f"Torque {data[1]:.3f} N-m\nSpeed {data[2]:.3f} RPM"
                 )
                 last_visual_update = time.time()
-
-            # writer.writerow(data)
-
-            with open(current_filename, "a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(data)
         except:
             logging.exception("")
 
-    logging.debug("Stopping data record...")
+    logging.debug("Stopping data record (saving to file)...")
     try:
-        info_label.config(text="Stopping recording...")
-        f.close()
+        info_label.config(text="Cleaning up data...")
         ljm.eStreamStop(handle)  # Close Data stream from LJ
         ljm.close(handle)
+
+        # TODO check this
+        raw_rpm_data = [row[3] for row in data]
+        rpm_data = []
+        num_zero_rows = (scanRate // engineScanRate - 1) // 2
+        for i in range(0, num_zero_rows):
+            rpm_data.append(0)
+        for i in range(num_zero_rows, len(data) - num_zero_rows):
+            rpm_data.append(mean(raw_rpm_data[i - num_zero_rows : i + num_zero_rows]))
+        while len(rpm_data) < len(data):
+            rpm_data.append(0)
+
+        raw_rpm_data.clear()
+        for i in range(len(data)):
+            data[i][3] = rpm_data[i]
+        rpm_data.clear()
+
+        with open(current_filename, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(data)
         logging.debug("Stopped & saved data")
         info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}")
     except:
