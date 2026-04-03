@@ -30,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.7"
+VERSION = "0.0.8"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -45,7 +45,7 @@ logging.basicConfig(
     format="{asctime}:{levelname}:{name}:{message}",
     style="{",
     datefmt="%Y-%m-%d %H:%M:%S",
-    level=logging.DEBUG,
+    level=logging.INFO,
 )
 
 
@@ -75,10 +75,10 @@ def openLabJack():
     # AIN0:
     #   Range = +/-10.0 V (10)
     #   Resolution index = Default (0)
-    #   Negative Channel = Differential with AIN1 as negative (1)
+    #   Negative Channel = single-ended (199)
     #   Settling, in microseconds = Auto (0)
-    #   See https://github.com/labjack/labjack-ljm-python/blob/master/Examples/More/Utilities/thermocouple_example_ain_ef.py#L103
-    #      for Diffy reference
+
+    # AIN1 is the negative port for both AIN0 and AIN2
 
     # AIN2:
     #   Range = +/-10.0 V (10)
@@ -96,6 +96,10 @@ def openLabJack():
         "AIN0_RESOLUTION_INDEX",
         "AIN0_NEGATIVE_CH",
         "AIN0_SETTLING_US",
+        "AIN1_RANGE",
+        "AIN1_RESOLUTION_INDEX",
+        "AIN1_NEGATIVE_CH",
+        "AIN1_SETTLING_US",
         "AIN2_RANGE",
         "AIN2_RESOLUTION_INDEX",
         "AIN2_NEGATIVE_CH",
@@ -104,7 +108,13 @@ def openLabJack():
         "DIO0_EF_ENABLE",
         "DIO0_EF_INDEX",
     ]
-    aValues = [10, 0, 1, 0, 10, 0, ljm.constants.GND, 0, 450, 1, 7]
+    aValues = [10, 0, ljm.constants.GND, 0, 10, 0, ljm.constants.GND, 0, 10, 0, ljm.constants.GND, 0, 450, 0, 8]  # fmt: skip
+    numFrames = len(aNames)
+    ljm.eWriteNames(handle_local, numFrames, aNames, aValues)
+
+    # LabJack can't reconfigure EFs if the enable is 1
+    aNames = ["DIO0_EF_ENABLE"]
+    aValues = [1]
     numFrames = len(aNames)
     ljm.eWriteNames(handle_local, numFrames, aNames, aValues)
 
@@ -150,6 +160,7 @@ def start_log():
     # Scan list names to stream - Must be updated depending on sensors
     aScanListNames = [
         "AIN0",
+        "AIN1",
         "AIN2",
         "DIO0_EF_READ_A",
         "STREAM_DATA_CAPTURE_16",
@@ -161,7 +172,7 @@ def start_log():
 
     lastEngineRPMCount = 0
     engineScanRate = 10  # engine RPM reads in Hz
-    engineRPMFactor = scanRate * 60 / 20  # TODO: replace the 20 with the number of fins
+    engineRPMFactor = 60 / 20  # TODO: replace the 20 with the number of fins
 
     data = []
     newData = [0, 0, 0, 0]
@@ -179,22 +190,23 @@ def start_log():
     while loggingState == 1:
         try:
             aData = ljm.eStreamRead(handle)[0]
-            newData[0] = time.time() - start_time
+            now = time.time()
+            newData[0] = now - start_time
 
-            newData[1] = aData[0] * -20  # 100 Nm over 5 volts
-            newData[2] = aData[1] * 1200  # 6000 RPM over 5 volts
+            newData[1] = (aData[0] - aData[1]) * -20  # 100 Nm over 5 volts
+            newData[2] = (aData[2] - aData[1]) * 1200  # 6000 RPM over 5 volts
 
-            rawEngineRPMCount = aData[2] + aData[3] * 65536  # engine RPM data
+            rawEngineRPMCount = aData[3] + aData[4] * 65536  # engine RPM data
             newData[3] = rawEngineRPMCount - lastEngineRPMCount
             lastEngineRPMCount = rawEngineRPMCount
 
             data.append(newData)
 
-            if time.time() - last_visual_update > (1 / 60):
+            if now - last_visual_update > (1 / 60):
                 info_label.config(
-                    text=f"Torque {data[1]:.3f} N-m\nSpeed {data[2]:.3f} RPM"
+                    text=f"Torque {newData[1]:.3f} N-m\nSpeed {newData[2]:.3f} RPM"
                 )
-                last_visual_update = time.time()
+                last_visual_update = now
         except:
             logging.exception("")
 
@@ -204,14 +216,19 @@ def start_log():
         ljm.eStreamStop(handle)  # Close Data stream from LJ
         ljm.close(handle)
 
-        # TODO check this
         raw_rpm_data = [row[3] for row in data]
+        timestamps = [row[0] for row in data]
         rpm_data = []
         num_zero_rows = (scanRate // engineScanRate - 1) // 2
         for i in range(0, num_zero_rows):
             rpm_data.append(0)
         for i in range(num_zero_rows, len(data) - num_zero_rows):
-            rpm_data.append(mean(raw_rpm_data[i - num_zero_rows : i + num_zero_rows]))
+            ticks = raw_rpm_data[i - num_zero_rows : i + num_zero_rows]
+            times = timestamps[i - num_zero_rows : i + num_zero_rows]
+
+            result = [x / y for x, y in zip(ticks, times)]
+            pps = mean(result)
+            rpm_data.append(pps * engineRPMFactor)
         while len(rpm_data) < len(data):
             rpm_data.append(0)
 
