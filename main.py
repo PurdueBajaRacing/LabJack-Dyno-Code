@@ -30,7 +30,7 @@ T-Series and I/O:
 
 """
 
-VERSION = "0.0.8"
+VERSION = "0.0.9"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -131,7 +131,7 @@ def makeNewFile():
         i += 1
         filename = DATA_DIR + "/" + filename_blank + str(i) + ".csv"
 
-    file_header = "Time, Torque (Nm), Shaft Speed (RPM), Engine Speed (RPM)\n"
+    file_header = "Time, Torque (Nm), Shaft Speed (RPM), Raw Engine Speed (RPM)\n"
     with open(filename, "w") as f:
         f.write(file_header)
 
@@ -174,7 +174,8 @@ def start_log():
     engineScanRate = 10  # engine RPM reads in Hz
     engineRPMFactor = 60 / 20  # TODO: replace the 20 with the number of fins
 
-    data = []
+    # data = []
+    engineRPMAverage = []
     newData = [0, 0, 0, 0]
     last_visual_update = 0
     logging.debug(f"Writing data to {current_filename}")
@@ -185,7 +186,11 @@ def start_log():
     # Configure and start stream
     ljm.eStreamStart(handle, scansPerRead, numAddresses, aScanList, scanRate)
 
+    f = open(current_filename, "a", newline="")
+    writer = csv.writer(f)
+
     start_time = time.time()
+    last_now = start_time
 
     while loggingState == 1:
         try:
@@ -197,14 +202,26 @@ def start_log():
             newData[2] = (aData[2] - aData[1]) * 1200  # 6000 RPM over 5 volts
 
             rawEngineRPMCount = aData[3] + aData[4] * 65536  # engine RPM data
-            newData[3] = rawEngineRPMCount - lastEngineRPMCount
+            newData[3] = (
+                (rawEngineRPMCount - lastEngineRPMCount) * engineRPMFactor
+            ) / (last_now - now)
             lastEngineRPMCount = rawEngineRPMCount
 
-            data.append(newData)
+            last_now = now
 
-            if now - last_visual_update > (1 / 60):
+            writer.writerow(newData)
+
+            engineRPMAverage.append(newData[3])
+
+            # data.append(newData)
+
+            if now - last_visual_update > (1 / 10):
+
+                averageEngineRPM = mean(engineRPMAverage)
+                engineRPMAverage.clear()
+
                 info_label.config(
-                    text=f"Torque {newData[1]:.3f} N-m\nSpeed {newData[2]:.3f} RPM"
+                    text=f"Torque {newData[1]:.3f} N-m\nSpeed {newData[2]:.3f} RPM\nEngine {averageEngineRPM:.3f} RPM"
                 )
                 last_visual_update = now
         except:
@@ -216,30 +233,33 @@ def start_log():
         ljm.eStreamStop(handle)  # Close Data stream from LJ
         ljm.close(handle)
 
-        raw_rpm_data = [row[3] for row in data]
-        timestamps = [row[0] for row in data]
-        rpm_data = []
-        num_zero_rows = (scanRate // engineScanRate - 1) // 2
-        for i in range(0, num_zero_rows):
-            rpm_data.append(0)
-        for i in range(num_zero_rows, len(data) - num_zero_rows):
-            ticks = raw_rpm_data[i - num_zero_rows : i + num_zero_rows]
-            times = timestamps[i - num_zero_rows : i + num_zero_rows]
+        # raw_rpm_data = [row[3] for row in data]
+        # timestamps = [row[0] for row in data]
+        # rpm_data = []
+        # num_zero_rows = (scanRate // engineScanRate - 1) // 2
+        # for i in range(0, num_zero_rows):
+        #     rpm_data.append(0)
+        # for i in range(num_zero_rows, len(data) - num_zero_rows):
+        #     ticks = raw_rpm_data[i - num_zero_rows : i + num_zero_rows]
+        #     times = timestamps[i - num_zero_rows : i + num_zero_rows]
 
-            result = [x / y for x, y in zip(ticks, times)]
-            pps = mean(result)
-            rpm_data.append(pps * engineRPMFactor)
-        while len(rpm_data) < len(data):
-            rpm_data.append(0)
+        #     result = [x / y for x, y in zip(ticks, times)]
+        #     pps = mean(result)
+        #     rpm_data.append(pps * engineRPMFactor)
+        # while len(rpm_data) < len(data):
+        #     rpm_data.append(0)
 
-        raw_rpm_data.clear()
-        for i in range(len(data)):
-            data[i][3] = rpm_data[i]
-        rpm_data.clear()
+        # raw_rpm_data.clear()
+        # for i in range(len(data)):
+        #     data[i][3] = rpm_data[i]
+        # rpm_data.clear()
 
-        with open(current_filename, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerows(data)
+        # with open(current_filename, "a", newline="") as f:
+        #     writer = csv.writer(f)
+        #     writer.writerows(data)
+
+        f.close()
+
         logging.debug("Stopped & saved data")
         info_label.config(text=f"Saved data to {current_filename[len(DATA_DIR) + 1:]}")
     except:
