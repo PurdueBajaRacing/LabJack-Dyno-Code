@@ -2,6 +2,7 @@ from labjack import ljm
 import ttkbootstrap as ttk
 import os, time, csv, sys, logging, queue
 from threading import Thread
+import numpy as np
 
 # --- Configuration & Setup ---
 VERSION = "1.1.0"
@@ -109,40 +110,59 @@ def start_log():
                 try:
                     # Get batch from producer
                     batch_data = data_queue.get(timeout=0.2)
-                    num_scans_in_batch = len(batch_data) // numChannels
                     last_visual_update = 0
 
-                    rows_to_write = []
+                    # --- Setup for the calculation ---
+                    # Convert batch_data to a numpy array immediately.
+                    # Using float64 ensures precision for the time and converted values.
+                    batch_arr = np.array(batch_data)
+                    num_scans = len(batch_arr) // numChannels
 
-                    for i in range(num_scans_in_batch):
-                        # 1. HARDWARE-ALIGNED TIMING
-                        precise_time = sample_count * inverse_scan_rate
+                    # 1. Reshape into (Scans, Channels)
+                    # This allows us to slice by column: data[:, 0], data[:, 1], etc.
+                    data = batch_arr.reshape(num_scans, numChannels)
 
-                        # 2. DATA EXTRACTION
-                        start_idx = i * numChannels
-                        row = batch_data[start_idx : start_idx + numChannels]
+                    # 2. Timing (Vectorized)
+                    # np.arange creates [0, 1, 2, ... num_scans-1]
+                    # Adding sample_count shifts it to the current hardware tick
+                    precise_times = (
+                        np.arange(num_scans) + sample_count
+                    ) * inverse_scan_rate
 
-                        # 3. CALCULATIONS
-                        torque = row[0] * TORQUE_CONVERSION
-                        shaft_rpm = max(0, row[1] * 1200)
+                    # 3. Conversions
+                    torques = data[:, 0] * TORQUE_CONVERSION
+                    shaft_rpms = np.maximum(0, data[:, 1] * 1200)
 
-                        # Engine RPM logic
-                        raw_engine_count = row[2] + (row[3] << 16)
-                        delta_ticks = raw_engine_count - last_engine_count
-                        last_engine_count = raw_engine_count
+                    # 4. Engine RPM (The "Tricky" Bit)
+                    # Ensure we use int32 or int64 to prevent overflow during the shift
+                    col2 = data[:, 2]
+                    col3 = data[:, 3]
+                    raw_engine_counts = col2 + (col3 << 16)
 
-                        engine_rpm = (delta_ticks * actualScanRate) * ENGINE_FACTOR
-                        visual_tick_sum += delta_ticks
+                    # To get deltas, we need the last value from the PREVIOUS batch
+                    # We stack the last_engine_count at the front of our current array
+                    counts_with_bridge = np.concatenate(
+                        ([last_engine_count], raw_engine_counts)
+                    )
+                    delta_ticks = np.diff(counts_with_bridge)
 
-                        # 4. BUFFER DATA (In-memory is faster than Disk)
-                        rows_to_write.append(
-                            [precise_time, torque, shaft_rpm, engine_rpm]
-                        )
+                    engine_rpms = delta_ticks * (actualScanRate * ENGINE_FACTOR)
 
-                        sample_count += 1
+                    # 5. Final Assembly
+                    # This creates a 2D array where each row is [time, torque, rpm, engine_rpm]
+                    processed_batch = np.column_stack(
+                        (precise_times, torques, shaft_rpms, engine_rpms)
+                    )
+
+                    # 6. Update State for the next iteration
+                    sample_count += num_scans
+                    last_engine_count = raw_engine_counts[-1]
+                    visual_tick_sum += np.sum(delta_ticks)
+                    latest_torque = processed_batch[-1, 1]
+                    latest_shaft_rpm = processed_batch[-1, 2]
 
                     # --- AFTER THE LOOP (Efficient Disk I/O) ---
-                    writer.writerows(rows_to_write)
+                    writer.writerows(processed_batch)
 
                     now = time.time()
                     if now - last_visual_update > 0.1:
@@ -153,7 +173,7 @@ def start_log():
                         visual_tick_sum = 0
 
                         info_label.config(
-                            text=f"Torque: {torque:.2f} Ft-Lbs\nShaft: {shaft_rpm:.2f} RPM\nEngine: {engine_rpm_average:.2f} RPM"
+                            text=f"Torque: {latest_torque:.2f} Ft-Lbs\nShaft: {latest_shaft_rpm:.2f} RPM\nEngine: {engine_rpm_average:.2f} RPM"
                         )
 
                     data_queue.task_done()
