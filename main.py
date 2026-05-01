@@ -4,7 +4,7 @@ import os, time, csv, sys, logging, queue
 from threading import Thread
 
 # --- Configuration & Setup ---
-VERSION = "1.0.4"
+VERSION = "1.1.0"
 IS_EXE_MODE = getattr(sys, "frozen", False)
 if IS_EXE_MODE:
     DATA_DIR = os.path.dirname(sys.executable) + "/data"
@@ -14,7 +14,11 @@ else:
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-NM_TO_FTLBS = 0.7376
+NM_TO_FTLBS = 0.7375621493
+TORQUE_CONVERSION = -20 * NM_TO_FTLBS
+ENGINE_FACTOR = 60 / 20  # 20 pulses per rev
+SCAN_RATE = 30_000
+SCANS_PER_READ = 100  # Batch size
 
 logging.basicConfig(
     filename="app.log",
@@ -25,8 +29,6 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     level=logging.INFO,
 )
-
-# --- Functions ---
 
 
 def openLabJack():
@@ -40,10 +42,6 @@ def openLabJack():
             "AIN0_RESOLUTION_INDEX",
             "AIN0_NEGATIVE_CH",
             "AIN0_SETTLING_US",
-            "AIN1_RANGE",
-            "AIN1_RESOLUTION_INDEX",
-            "AIN1_NEGATIVE_CH",
-            "AIN1_SETTLING_US",
             "AIN2_RANGE",
             "AIN2_RESOLUTION_INDEX",
             "AIN2_NEGATIVE_CH",
@@ -52,23 +50,7 @@ def openLabJack():
             "DIO0_EF_ENABLE",
             "DIO0_EF_INDEX",
         ]
-        aValues = [
-            10,
-            0,
-            ljm.constants.GND,
-            500,
-            10,
-            0,
-            ljm.constants.GND,
-            500,
-            10,
-            0,
-            ljm.constants.GND,
-            500,
-            450,
-            0,
-            8,
-        ]
+        aValues = [10, 0, 1, 0, 10, 0, 3, 0, 0, 0, 8]
         ljm.eWriteNames(handle, len(aNames), aNames, aValues)
 
         # Enable High Speed Counter
@@ -107,17 +89,9 @@ def start_log():
         return
 
     # Stream Constants
-    aScanListNames = [
-        "AIN0",
-        "AIN1",
-        "AIN2",
-        "DIO0_EF_READ_A",
-        "STREAM_DATA_CAPTURE_16",
-    ]
+    aScanListNames = ["AIN0", "AIN2", "DIO0_EF_READ_A", "STREAM_DATA_CAPTURE_16"]
     numChannels = len(aScanListNames)
     aScanList = ljm.namesToAddresses(numChannels, aScanListNames)[0]
-    scanRate = 1000  # Hz
-    scansPerRead = 20  # Batch size (Read 50 times per second)
 
     data_queue = queue.Queue()
 
@@ -125,9 +99,8 @@ def start_log():
         """Processes the queue, performs math, and writes to disk."""
         sample_count = 0
         last_engine_count = 0
-        engine_factor = 60 / 20  # 20 pulses per rev
-        last_ui_update = 0
         visual_tick_sum = 0
+        inverse_scan_rate = 1.0 / actualScanRate
 
         with open(current_filename, "a", newline="") as f:
             writer = csv.writer(f)
@@ -137,54 +110,51 @@ def start_log():
                     # Get batch from producer
                     batch_data = data_queue.get(timeout=0.2)
                     num_scans_in_batch = len(batch_data) // numChannels
+                    last_visual_update = 0
+
+                    rows_to_write = []
 
                     for i in range(num_scans_in_batch):
                         # 1. HARDWARE-ALIGNED TIMING
-                        # Use the sample index to guarantee perfect 1000Hz increments
-                        precise_time = sample_count * (1.0 / scanRate)
+                        precise_time = sample_count * inverse_scan_rate
 
                         # 2. DATA EXTRACTION
                         start_idx = i * numChannels
                         row = batch_data[start_idx : start_idx + numChannels]
 
                         # 3. CALCULATIONS
-                        torque = (row[0] - row[1]) * -20 * NM_TO_FTLBS
-                        shaft_rpm = max(0, (row[2] - row[1]) * 1200)
+                        torque = row[0] * TORQUE_CONVERSION
+                        shaft_rpm = max(0, row[1] * 1200)
 
-                        # Engine RPM (Counter logic)
-                        raw_engine_count = row[3] + (row[4] * 65536)
+                        # Engine RPM logic
+                        raw_engine_count = row[2] + (row[3] << 16)
                         delta_ticks = raw_engine_count - last_engine_count
                         last_engine_count = raw_engine_count
 
-                        # RPM = (pulses / time_between_scans) * factor
-                        engine_rpm = (delta_ticks * scanRate) * engine_factor
+                        engine_rpm = (delta_ticks * actualScanRate) * ENGINE_FACTOR
                         visual_tick_sum += delta_ticks
 
-                        # 4. DISK I/O
-                        writer.writerow(
-                            [
-                                f"{precise_time:.4f}",
-                                f"{torque}",
-                                f"{shaft_rpm}",
-                                f"{engine_rpm}",
-                            ]
+                        # 4. BUFFER DATA (In-memory is faster than Disk)
+                        rows_to_write.append(
+                            [precise_time, torque, shaft_rpm, engine_rpm]
                         )
 
-                        # 5. UI THROTTLED UPDATE (10Hz)
-                        if time.time() - last_ui_update > 0.1:
-                            engine_rpm_average = (
-                                visual_tick_sum
-                                / (time.time() - last_ui_update)
-                                * engine_factor
-                            )
-                            visual_tick_sum = 0
-
-                            info_label.config(
-                                text=f"Torque: {torque:.2f} Ft-Lbs\nShaft: {shaft_rpm:.2f} RPM\nEngine: {engine_rpm_average:.2f} RPM\nCVT Ratio: {engine_rpm_average/shaft_rpm:.2f}"
-                            )
-                            last_ui_update = time.time()
-
                         sample_count += 1
+
+                    # --- AFTER THE LOOP (Efficient Disk I/O) ---
+                    writer.writerows(rows_to_write)
+
+                    now = time.time()
+                    if now - last_visual_update > 0.1:
+                        engine_rpm_average = (
+                            visual_tick_sum / (now - last_visual_update)
+                        ) * ENGINE_FACTOR
+                        last_visual_update = now
+                        visual_tick_sum = 0
+
+                        info_label.config(
+                            text=f"Torque: {torque:.2f} Ft-Lbs\nShaft: {shaft_rpm:.2f} RPM\nEngine: {engine_rpm_average:.2f} RPM"
+                        )
 
                     data_queue.task_done()
                 except queue.Empty:
@@ -203,12 +173,12 @@ def start_log():
 
         # Start Stream
         actualScanRate = ljm.eStreamStart(
-            handle, scansPerRead, numChannels, aScanList, scanRate
+            handle, SCANS_PER_READ, numChannels, aScanList, SCAN_RATE
         )
         logging.info(f"Stream started at actual rate: {actualScanRate} Hz")
 
         while loggingState == 1:
-            # Blocking call: waits for 'scansPerRead' to be ready in hardware buffer
+            # Blocking call: waits for 'SCANS_PER_READ' to be ready in hardware buffer
             ret = ljm.eStreamRead(handle)
             data_queue.put(ret[0])
 
