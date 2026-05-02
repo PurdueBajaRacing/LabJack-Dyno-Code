@@ -18,7 +18,7 @@ if not os.path.exists(DATA_DIR):
 NM_TO_FTLBS = 0.7375621493
 TORQUE_CONVERSION = -20 * NM_TO_FTLBS
 ENGINE_FACTOR = 60 / 20  # 20 pulses per rev
-SCAN_RATE = 30_000
+SCAN_RATE = 25_000
 SCANS_PER_READ = 100  # Batch size
 
 logging.basicConfig(
@@ -54,7 +54,7 @@ def openLabJack():
         aValues = [10, 0, 1, 0, 10, 0, 3, 0, 0, 0, 8]
         ljm.eWriteNames(handle, len(aNames), aNames, aValues)
 
-        # Enable High Speed Counter
+        # Enable Interrupt Counter
         ljm.eWriteName(handle, "DIO0_EF_ENABLE", 1)
         return handle
     except Exception:
@@ -102,6 +102,7 @@ def start_log():
         last_engine_count = 0
         visual_tick_sum = 0
         inverse_scan_rate = 1.0 / actualScanRate
+        last_visual_update = 0
 
         with open(current_filename, "a", newline="") as f:
             writer = csv.writer(f)
@@ -110,7 +111,6 @@ def start_log():
                 try:
                     # Get batch from producer
                     batch_data = data_queue.get(timeout=0.2)
-                    last_visual_update = 0
 
                     # --- Setup for the calculation ---
                     # Convert batch_data to a numpy array immediately.
@@ -133,11 +133,12 @@ def start_log():
                     torques = data[:, 0] * TORQUE_CONVERSION
                     shaft_rpms = np.maximum(0, data[:, 1] * 1200)
 
-                    # 4. Engine RPM (The "Tricky" Bit)
-                    # Ensure we use int32 or int64 to prevent overflow during the shift
+                    # 4. Engine RPM
                     col2 = data[:, 2]
                     col3 = data[:, 3]
-                    raw_engine_counts = col2 + (col3 << 16)
+                    raw_engine_counts = col2.astype(np.int64) + (
+                        col3.astype(np.int64) << 16
+                    )
 
                     # To get deltas, we need the last value from the PREVIOUS batch
                     # We stack the last_engine_count at the front of our current array
@@ -169,22 +170,26 @@ def start_log():
                         engine_rpm_average = (
                             visual_tick_sum / (now - last_visual_update)
                         ) * ENGINE_FACTOR
+
+                        # Define a small helper function for the update
+                        def update_ui():
+                            info_label.config(
+                                text=f"Torque: {latest_torque:.2f} Ft-Lbs\n"
+                                f"Shaft: {latest_shaft_rpm:.2f} RPM\n"
+                                f"Engine: {engine_rpm_average:.2f} RPM"
+                            )
+
+                        # Schedule the helper to run on the MAIN thread
+                        window.after(0, update_ui)
+
                         last_visual_update = now
                         visual_tick_sum = 0
-
-                        info_label.config(
-                            text=f"Torque: {latest_torque:.2f} Ft-Lbs\nShaft: {latest_shaft_rpm:.2f} RPM\nEngine: {engine_rpm_average:.2f} RPM"
-                        )
 
                     data_queue.task_done()
                 except queue.Empty:
                     continue
                 except Exception as e:
                     logging.error(f"Consumer Error: {e}")
-
-    # Start the Consumer Thread
-    consumer_thread = Thread(target=consumer_worker, daemon=True)
-    consumer_thread.start()
 
     # --- PRODUCER (High-Priority Stream) ---
     try:
@@ -196,6 +201,10 @@ def start_log():
             handle, SCANS_PER_READ, numChannels, aScanList, SCAN_RATE
         )
         logging.info(f"Stream started at actual rate: {actualScanRate} Hz")
+
+        # Start the Consumer Thread
+        consumer_thread = Thread(target=consumer_worker, daemon=True)
+        consumer_thread.start()
 
         while loggingState == 1:
             # Blocking call: waits for 'SCANS_PER_READ' to be ready in hardware buffer

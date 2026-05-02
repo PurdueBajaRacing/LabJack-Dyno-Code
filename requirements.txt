@@ -1,3 +1,4 @@
 pyinstaller
 labjack-ljm
 ttkbootstrap
+numpy
