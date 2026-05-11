@@ -64,7 +64,7 @@ def openLabJack():
 
 def makeNewFile():
     """Finds the next available filename."""
-    i = 0
+    i = 1
     while os.path.exists(os.path.join(DATA_DIR, f"LJdata{i}.csv")):
         i += 1
     full_path = os.path.join(DATA_DIR, f"LJdata{i}.csv")
@@ -219,7 +219,10 @@ def start_log():
         ljm.eStreamStop(handle)
         ljm.close(handle)
         loggingState = 0
-        info_label.config(text="Logging Stopped. File Saved.", bootstyle="success")
+        info_label.config(
+            text=f"Logging Stopped\nFile saved to {current_filename}",
+            bootstyle="success",
+        )
 
 
 def stop_log():
